@@ -75,7 +75,7 @@ AppleHDA and AppleALC provide the codec route. CirrusAudioFixup manages the ampl
 | ASUS ROG Zephyrus G14 GA403UV      | `1043:1B13`  | CS35L56   | I2C | ALC285 | Working |
 | ASUS ROG Zephyrus G16 GU605MV      | `1043:1C63`  | CS35L56   | SPI | ALC285 | Working |
 | Alienware x17 R2                   | `1028:0B28`  | CS35L41   | SPI | ALC289 | Working |
-| Lenovo IdeaPad (CLSA0102 / AMD)    | `17AA:383D`  | CS35L51   | I2C | ALC287 | Experimental |
+| Lenovo Yoga Slim 7 Carbon 14ACN6 (82L0, CLSA0102 / AMD) | `17AA:383D`  | CS35L51   | I2C | ALC287 | Experimental |
 
 ### Other boards and controller support
 
