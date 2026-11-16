@@ -171,6 +171,15 @@ void CirrusAudioFixup::probeTimerFired(OSObject* owner, IOTimerEventSource* send
     if (self) {
         if (self->mStopping || self->mStartupFailed)
             return;
+        if (self->mStartupDeferred) {
+            self->mStartupDeferred = false;
+            if (!self->finishStartup()) {
+                self->mStartupFailed = true;
+                self->setProperty("Cirrus_Driver_Verdict", "STARTUP_FAILED");
+                CIRRUS_ERR("deferred startup failed; no further bus activity");
+            }
+            return;
+        }
         if (!self->mPowerAvailable && !self->mResumePending)
             return;
         if (self->mStartupPending) {

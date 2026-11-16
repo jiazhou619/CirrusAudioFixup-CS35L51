@@ -163,10 +163,15 @@ bool CirrusAudioFixup::start(IOService* provider) {
         mProbeTimer->setTimeoutMS(10);
         return true;
     }
-    if (!finishStartup()) {
-        stop(provider);
-        return false;
-    }
+    // Platform reset, I2C discovery and amplifier bring-up all issue blocking
+    // bus transfers. Run them from the probe timer so a stalled bus cannot hold
+    // the attach path and delay boot.
+    mStartupDeferred = true;
+    setProperty("Cirrus_Driver_Verdict", "WAITING_DEFERRED_STARTUP");
+#if defined(KERNEL)
+    publishBootCheckpoint(this, "START_DEFERRED");
+#endif
+    mProbeTimer->setTimeoutMS(10);
     return true;
 }
 

@@ -140,6 +140,7 @@ private:
     bool finishStartup();
     void continueStartup();
     bool mStartupPending{false};
+    bool mStartupDeferred{false};
     bool mStartupFailed{false};
     void discoverPlatformConfiguration(IOACPIPlatformDevice* provider, const cirrus::platform::AmplifierDriverRegistration& definition);
     bool adoptDiscoveredBoard(const cirrus::platform::BoardIdentity& identity, const char* profileName);
