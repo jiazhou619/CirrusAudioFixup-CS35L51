@@ -1,0 +1,115 @@
+name: Build CS35L51 kext
+
+on:
+  push:
+    branches: [cs35l51]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and package
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned kernel SDK
+        uses: actions/checkout@v4
+        with:
+          repository: acidanthera/MacKernelSDK
+          ref: 7af1933c27aefcbdf4809ee44478829aad30f9c1
+          path: MacKernelSDK
+
+      - name: Checkout pinned Lilu headers
+        uses: actions/checkout@v4
+        with:
+          repository: acidanthera/Lilu
+          ref: e4748cc081bf060302c7d3c44a643ce1d11b7e1d
+          path: Lilu
+
+      - name: Show build environment
+        run: |
+          sw_vers
+          xcodebuild -version
+          python3 --version
+
+      - name: Run host regression test suite
+        run: python3 Tests/run.py
+
+      - name: Record build source identity
+        run: python3 Tools/Build/build_provenance.py snapshot --root "$GITHUB_WORKSPACE" --snapshot "$RUNNER_TEMP/cirrus-source.json"
+
+      - name: Build Release kext
+        run: |
+          xcodebuild \
+            -project CirrusAudioFixup.xcodeproj \
+            -target CirrusAudioFixup \
+            -configuration Release \
+            -sdk macosx \
+            -jobs "$(sysctl -n hw.ncpu)" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="${GITHUB_WORKSPACE}/build/Release" \
+            build
+
+      - name: Build Debug kext
+        run: |
+          xcodebuild \
+            -project CirrusAudioFixup.xcodeproj \
+            -target CirrusAudioFixup \
+            -configuration Debug \
+            -sdk macosx \
+            -jobs "$(sysctl -n hw.ncpu)" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="${GITHUB_WORKSPACE}/build/Debug" \
+            build
+
+      - name: Verify build artifacts
+        run: |
+          python3 Tools/Build/release_metadata.py
+          for MODE in Release Debug; do
+            BUNDLE="${GITHUB_WORKSPACE}/build/${MODE}/CirrusAudioFixup.kext"
+            plutil -lint "${BUNDLE}/Contents/Info.plist"
+            python3 Tools/Build/release_metadata.py --bundle "$BUNDLE"
+            python3 Tools/Build/verify_kext_vtables.py "$BUNDLE/Contents/MacOS/CirrusAudioFixup"
+            lipo "${BUNDLE}/Contents/MacOS/CirrusAudioFixup" -verify_arch x86_64
+            SYMBOLS="${BUNDLE}.dSYM/Contents/Resources/DWARF/CirrusAudioFixup"
+            test -f "$SYMBOLS"
+            BINARY_UUID="$(dwarfdump --uuid "${BUNDLE}/Contents/MacOS/CirrusAudioFixup" | awk '{print $2}')"
+            SYMBOL_UUID="$(dwarfdump --uuid "$SYMBOLS" | awk '{print $2}')"
+            test -n "$BINARY_UUID"
+            test "$BINARY_UUID" = "$SYMBOL_UUID"
+            python3 Tools/Build/build_provenance.py finalize --root "$GITHUB_WORKSPACE" \
+              --snapshot "$RUNNER_TEMP/cirrus-source.json" --bundle "$BUNDLE" \
+              --configuration "$MODE" --binary-uuid "$BINARY_UUID" --symbols-uuid "$SYMBOL_UUID"
+            plutil -lint "$BUNDLE/Contents/Resources/CirrusBuildManifest.plist"
+          done
+
+      - name: Package kext bundles
+        run: |
+          cd "${GITHUB_WORKSPACE}/build/Release"
+          zip -qry "${GITHUB_WORKSPACE}/CirrusAudioFixup-RELEASE.zip" CirrusAudioFixup.kext
+
+          cd "${GITHUB_WORKSPACE}/build/Debug"
+          zip -qry "${GITHUB_WORKSPACE}/CirrusAudioFixup-DEBUG.zip" CirrusAudioFixup.kext CirrusAudioFixup.kext.dSYM
+
+          cd "${GITHUB_WORKSPACE}"
+          ls -lh CirrusAudioFixup-RELEASE.zip CirrusAudioFixup-DEBUG.zip
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CirrusAudioFixup-CS35L51-${{ github.sha }}
+          path: |
+            CirrusAudioFixup-RELEASE.zip
+            CirrusAudioFixup-DEBUG.zip
+          retention-days: 14
+          if-no-files-found: error

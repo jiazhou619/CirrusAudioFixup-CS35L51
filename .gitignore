@@ -1,0 +1,26 @@
+/build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace
+xcuserdata/
+.DS_Store
+*.dSYM/
+Thumbs.db
+desktop.ini
+*.exe
+__pycache__/
+*.pyc
+.vscode/
+.editorconfig
+/MacKernelSDK
+/Lilu
+.clangd
+/compile_commands.json
+.cache/
+*.log
+/*.txt
+
+# Locally packaged releases and diagnostic evidence
+/CirrusAudioFixup-*.zip
+/dist/
+/SHA256SUMS

@@ -1,0 +1,275 @@
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,4 +1,10 @@
+ # Changelog
++
++## [Unreleased]
++
++### CS35L41
++
++- Added experimental CS35L51 support for Lenovo `CLSA0102` boards (subsystem `17AA:383D`) over I2C. CS35L51 shares the Halo register map, WMFW framing and DSP boot sequence with the CS35L41, so it is driven by the existing CS35L41 module with a family-level DEVID match (`0x35A00`/`0xFFFFFF00`, CS35L56 excluded) instead of a duplicate driver.
+ 
+ ## [1.2.0] - 2026-11-06
+ 
+--- a/README.md
++++ b/README.md
+@@ -57,7 +57,7 @@
+ | ----------------------- | ----------- | --------------------------------------------------------------------------------------- |
+ | **CS35L41**             | **Working** | Revision B2; I2C and SPI; verified board profiles, DSP firmware, tuning and calibration |
+ | CS35L45                 | Unsupported | Requires a dedicated amplifier driver                                                   |
+-| CS35L51                 | Unsupported | Requires a dedicated amplifier driver                                                   |
++| **CS35L51**             | **Experimental** | Halo-family sibling of CS35L41; driven by the CS35L41 code path (`CLSA0102`)       |
+ | **CS35L56**             | **Working** | Revision B0; I2C and SPI; verified board profiles, DSP firmware, tuning and calibration |
+ | Other Cirrus amplifiers | Unsupported | Additional families can use the shared framework                                        |
+ 
+@@ -75,6 +75,7 @@
+ | ASUS ROG Zephyrus G14 GA403UV      | `1043:1B13`  | CS35L56   | I2C | ALC285 | Working |
+ | ASUS ROG Zephyrus G16 GU605MV      | `1043:1C63`  | CS35L56   | SPI | ALC285 | Working |
+ | Alienware x17 R2                   | `1028:0B28`  | CS35L41   | SPI | ALC289 | Working |
++| Lenovo IdeaPad (CLSA0102 / AMD)    | `17AA:383D`  | CS35L51   | I2C | ALC287 | Experimental |
+ 
+ ### Other boards and controller support
+ 
+--- a/CirrusAudioFixup\Info.plist
++++ b/CirrusAudioFixup\Info.plist
+@@ -87,6 +87,10 @@
+                 </dict>
+                 <dict>
+                     <key>IOName</key>
++                    <string>CLSA0102</string>
++                </dict>
++                <dict>
++                    <key>IOName</key>
+                     <string>CSC3551</string>
+                 </dict>
+                 <dict>
+--- a/CirrusAudioFixup\Core\AudioTypes.hpp
++++ b/CirrusAudioFixup\Core\AudioTypes.hpp
+@@ -54,4 +54,10 @@
+     CS35L56 = 0x3556,
+ };
+ 
++// Halo-family parts (CS35L41/CS35L51) share one register map, WMFW framing and
++// DSP boot sequence, so the CS35L41 driver owns both.
++constexpr bool isHaloAmplifier(AmplifierModel model) {
++    return model == AmplifierModel::CS35L41 || model == AmplifierModel::CS35L51;
+ }
++
++}
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Device.hpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Device.hpp
+@@ -65,7 +65,7 @@
+         mDeviceId = devid;
+         mRevisionId = revid;
+ 
+-        mPresent = (devid == registers::kValDeviceId);
++        mPresent = registers::isSupportedDeviceId(devid);
+         return mPresent;
+     }
+ 
+@@ -315,7 +315,7 @@
+     bool isAlive(core::RegisterIO& io) override {
+         uint32_t val = 0;
+ 
+-        return io.read(registers::kRegDeviceId, &val) && val == registers::kValDeviceId;
++        return io.read(registers::kRegDeviceId, &val) && registers::isSupportedDeviceId(val);
+     }
+ };
+ 
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Diagnostics.cpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Diagnostics.cpp
+@@ -2,7 +2,7 @@
+ 
+ namespace cirrus::devices::amplifiers::cs35l41 {
+ void CS35L41Driver::probeAmplifier(AmplifierState& amp) {
+-    if (amp.model != cirrus::core::AmplifierModel::CS35L41) {
++    if (!cirrus::core::isHaloAmplifier(amp.model)) {
+         CIRRUS_LOG("endpoint %s model=%u cached ID=0x%08X; diagnostic registers belong to its driver", amp.name, unsigned(amp.model),
+                    amp.deviceId);
+         return;
+@@ -27,7 +27,7 @@
+ 
+     amp.deviceId = deviceId;
+     amp.revisionId = revisionId;
+-    amp.present = (deviceId == cirrus::devices::amplifiers::cs35l41::registers::kValDeviceId);
++    amp.present = cirrus::devices::amplifiers::cs35l41::registers::isSupportedDeviceId(deviceId);
+     if (!amp.present) {
+         CIRRUS_ERR("Amplifier device-id 0x%08X on %s is not handled by this driver; add -cirrusdbg and report hardware profile", deviceId,
+                    amp.name);
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Driver.cpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Driver.cpp
+@@ -260,7 +260,7 @@
+ IOReturn CS35L41Driver::identify() {
+     uint32_t id = 0;
+     const bool ok = readRegister(mAmplifier, registers::kRegDeviceId, &id, TRACE_PROBE);
+-    if (!ok || id != registers::kValDeviceId) {
++    if (!ok || !registers::isSupportedDeviceId(id)) {
+         IOReturn result = ok ? kIOReturnNotFound : mLastTransferReturn;
+         if (result == kIOReturnSuccess || result == -1)
+             result = kIOReturnNotReady;
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41DriverFactory.cpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41DriverFactory.cpp
+@@ -10,7 +10,8 @@
+         return nullptr;
+     const auto& binding = c.board.amplifiers[c.bindingIndex];
+     DeviceConfiguration configuration;
+-    if (binding.siliconId != registers::kValDeviceId || !c.endpoint.sameDevice(binding.endpoint) ||
++    if ((binding.siliconId != registers::kValDeviceId && binding.siliconId != registers::kHaloFamilySiliconId) ||
++        !c.endpoint.sameDevice(binding.endpoint) ||
+         binding.channelIndex > uint32_t(core::AudioChannel::Right) ||
+         !decodeDeviceConfiguration(binding.driverConfiguration, binding.driverConfigurationSize, binding.driverConfigurationKind,
+                                    configuration))
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41DriverRegistration.hpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41DriverRegistration.hpp
+@@ -26,6 +26,12 @@
+      destroyDriver, true, 0, 0xffffffffU, core::AmplifierModel::CS35L41, nullptr, inspectDevice, validDebugPhase},
+     {"cs35l41-clsa0101", "CLSA0101", registers::kValDeviceId, 3, cs35l41RegisterFormat(false), cs35l41RegisterFormat(true), createDriver,
+      destroyDriver, true, 0, 0xffffffffU, core::AmplifierModel::CS35L41, nullptr, inspectDevice, validDebugPhase},
++    // CS35L51 boards (Lenovo CLSA0102). The exact Halo variant is only known after
++    // the first DEVID read, so selection uses the family identity and the probe
++    // validates CS35L41/CS35L51 in isSupportedDeviceId().
++    {"cs35l51-clsa0102", "CLSA0102", registers::kHaloFamilySiliconId, 1, cs35l41RegisterFormat(false), cs35l41RegisterFormat(true),
++     createDriver, destroyDriver, true, 0, registers::kHaloFamilyMask, core::AmplifierModel::CS35L51, nullptr, inspectDevice,
++     validDebugPhase, discoverBoard, &kFirmwareReset},
+     {"cs35l41-csc3551", "CSC3551", registers::kValDeviceId, 3, cs35l41RegisterFormat(false), cs35l41RegisterFormat(true), createDriver,
+      destroyDriver, true, 0, 0xffffffffU, core::AmplifierModel::CS35L41, nullptr, inspectDevice, validDebugPhase, discoverBoard,
+      &kFirmwareReset,
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Hardware.cpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Hardware.cpp
+@@ -77,7 +77,7 @@
+ 
+     amp.deviceId = devIdAfter;
+     amp.revisionId = revIdAfter;
+-    amp.present = (devIdAfter == cirrus::devices::amplifiers::cs35l41::registers::kValDeviceId);
++    amp.present = cirrus::devices::amplifiers::cs35l41::registers::isSupportedDeviceId(devIdAfter);
+     if (!amp.present) {
+         CIRRUS_ERR("Amplifier device-id 0x%08X on %s is not handled by this driver after reset; add -cirrusdbg and report hardware profile",
+                    devIdAfter, amp.name);
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Playback.cpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\CS35L41Playback.cpp
+@@ -50,7 +50,7 @@
+ }
+ 
+ bool CS35L41Driver::stopPlayback(AmplifierState& amp) {
+-    if (amp.model != cirrus::core::AmplifierModel::CS35L41) {
++    if (!cirrus::core::isHaloAmplifier(amp.model)) {
+         amp.playbackFaulted = true;
+         recordDiagnosticFailure(amp, DIAG_PLAYBACK_INVARIANT, 0, 0, 0, kIOReturnNotReady, false);
+         return false;
+@@ -144,7 +144,7 @@
+ 
+ bool CS35L41Driver::stopRuntimePlayback(AmplifierState& amp) {
+     using namespace cirrus::devices::amplifiers::cs35l41;
+-    if (amp.model != cirrus::core::AmplifierModel::CS35L41) {
++    if (!cirrus::core::isHaloAmplifier(amp.model)) {
+         amp.playbackFaulted = true;
+         recordDiagnosticFailure(amp, DIAG_PLAYBACK_INVARIANT, 0, 0, 0, kIOReturnNotReady, false);
+         return false;
+@@ -254,7 +254,7 @@
+     const uint64_t nowMs = context.nowMs;
+     if (!amp.present)
+         return;
+-    if (amp.model != cirrus::core::AmplifierModel::CS35L41) {
++    if (!cirrus::core::isHaloAmplifier(amp.model)) {
+         // Initialization dispatch is not enough: runtime must also keep
+         // unimplemented chips away from CS35L41 register transactions.
+         amp.playbackFaulted = true;
+@@ -435,7 +435,7 @@
+         using namespace cirrus::devices::amplifiers::cs35l41;
+         auto& transition = amp.playbackTransition;
+         const bool dspMode = amp.monitorCount >= 1;
+-        if (amp.model != cirrus::core::AmplifierModel::CS35L41 || (!dspMode && !bootArgEnabled("-cirrusnodsp")) ||
++        if (!cirrus::core::isHaloAmplifier(amp.model) || (!dspMode && !bootArgEnabled("-cirrusnodsp")) ||
+             (dspMode && (!amp.dspAlive || !amp.firmwareValidated))) {
+             amp.playbackFaulted = true;
+             recordDiagnosticFailure(amp, DIAG_PLAYBACK_INVARIANT);
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Board\BoardProperties.hpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Board\BoardProperties.hpp
+@@ -92,6 +92,7 @@
+     {0x10433a40, 2, true, {0, 1, 0, 0}, 1, 2, 0, 1000, 4500, 24},
+     {0x10433a50, 2, true, {0, 1, 0, 0}, 1, 2, 0, 1000, 4500, 24},
+     {0x10433a60, 2, true, {0, 1, 0, 0}, 1, 2, 0, 1000, 4500, 24},
++    {0x17aa383d, 2, false, {0, 1, 0, 0}, 0, -1, -1, 0, 0, 0},
+     {0x17aa3865, 2, false, {0, 1, 0, 0}, 0, -1, -1, 0, 0, 0},
+     {0x17aa3866, 2, false, {0, 1, 0, 0}, 0, -1, -1, 0, 0, 0},
+     {0x17aa386e, 2, false, {0, 1, 0, 0}, 0, 2, -1, 0, 0, 0},
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Board\CS35L41BoardDiscovery.hpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Board\CS35L41BoardDiscovery.hpp
+@@ -8,6 +8,10 @@
+ #include "Platform/Board/BoardDiscovery.hpp"
+ namespace cirrus::devices::amplifiers::cs35l41 {
+ using ResourceAvailable = bool (*)(uint16_t, uint16_t, uint32_t);
++// The HID pins the board to a Halo part; the DEVID decides the variant later.
++inline uint32_t boardSiliconId(const char* hid) {
++    return hid && !strcmp(hid, "CLSA0102") ? registers::kHaloFamilySiliconId : registers::kValDeviceId;
++}
+ class CS35L41BoardDiscovery final : public platform::DiscoveredBoard {
+ public:
+     // Current resource schema has L0/R0.
+@@ -178,7 +182,7 @@
+         auto resolved = endpoint;
+         resolved.controllerPath = result->controllerPaths[i];
+         result->bindings[i] = {resolved,
+-                               registers::kValDeviceId,
++                               boardSiliconId(result->hid),
+                                channels[index],
+                                speakers[index],
+                                "speaker-protection",
+--- a/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Hardware\Registers.hpp
++++ b/CirrusAudioFixup\Devices\Amplifiers\CS35L41\Hardware\Registers.hpp
+@@ -135,6 +135,19 @@
+ constexpr uint32_t kRegDsp1MpuYregAccess3 = 0x02BC305C;
+ 
+ constexpr uint32_t kValDeviceId = 0x00035A40;
++// CS35L51/CS35L53 are Halo-family parts: same register map, same WMFW framing and
++// the same DSP boot sequence as the CS35L41, but a different DEVID (CS35L41 =
++// 0x35A40, CS35L51 = 0x35A51). Board discovery cannot read the part before
++// registering a driver, so selection uses the family identity below and the
++// first register read validates the real DEVID by family.
++constexpr uint32_t kHaloFamilySiliconId = 0x00035A00;
++constexpr uint32_t kHaloFamilyMask = 0xFFFFFF00;
++// CS35L56 reports a DEVID inside the same 0x35Axx block but has its own register
++// map and driver, so it must not be claimed by the Halo (CS35L41/CS35L51) path.
++constexpr uint32_t kValDeviceIdCs35l56 = 0x00035A56;
++constexpr bool isSupportedDeviceId(uint32_t id) {
++    return (id & kHaloFamilyMask) == kHaloFamilySiliconId && id != kValDeviceIdCs35l56;
++}
+ constexpr uint32_t kValSoftwareReset = 0x5A000000;
+ constexpr uint32_t kValHaloCoreEnable = 0x00000001;
+ constexpr uint32_t kValHaloCoreReset = 0x00000200;
+--- a/CirrusAudioFixup\Platform\Board\PlatformProfile.hpp
++++ b/CirrusAudioFixup\Platform\Board\PlatformProfile.hpp
+@@ -77,6 +77,11 @@
+ static constexpr PlatformProfile kPlatformProfiles[] = {
+     {"lenovo-clsa0100-cs35l41", "CLSA0100", core::AmplifierModel::CS35L41, kCs35l41StereoEndpoints, 2, &kAmdAmdi0030Reset, true, nullptr,
+      nullptr, 0, &kLegionProtectionIRQ},
++    // CS35L51 variant of the same Lenovo I2C wiring. Reset is driven from the
++    // ACPI reset-gpios descriptor; the Legion MMIO quirk is not reused because
++    // its pin mapping is board-specific. Discovery still has to resolve the
++    // board table and matching firmware before initialization.
++    {"lenovo-clsa0102-cs35l51", "CLSA0102", core::AmplifierModel::CS35L51, kCs35l41StereoEndpoints, 2, nullptr, true},
+     {"lenovo-clsa0101-cs35l41", "CLSA0101", core::AmplifierModel::CS35L41, kCs35l41StereoEndpoints, 2, nullptr, false},
+     {"acpi-csc3551-cs35l41", "CSC3551", core::AmplifierModel::CS35L41, kCs35l41StereoEndpoints, 2, nullptr, false, nullptr, nullptr, 0, nullptr, nullptr,
+      nullptr, BoardIdentitySource::ACPI},
+@@ -114,8 +119,9 @@
+         BoardIdentity actual{uint16_t(pciSubsystemId >> 16), uint16_t(pciSubsystemId), profile.acpiHid};
+         return profile.allowAutomaticInitialization && profile.boardConfiguration->permits(actual);
+     }
+-    return profile.allowAutomaticInitialization && profile.acpiHid && strcmp(profile.acpiHid, "CLSA0100") == 0 &&
+-           (pciSubsystemId == 0x17AA382B || pciSubsystemId == 0x17AA3847);
++    return profile.allowAutomaticInitialization && profile.acpiHid &&
++           ((!strcmp(profile.acpiHid, "CLSA0100") && (pciSubsystemId == 0x17AA382B || pciSubsystemId == 0x17AA3847)) ||
++            (!strcmp(profile.acpiHid, "CLSA0102") && pciSubsystemId == 0x17AA383D));
+ }
+ 
+ inline const PlatformProfile& defaultPlatformProfile() { return kSafeUnknownPlatform; }
+--- a/Tests\Platform\check_platform_configuration.py
++++ b/Tests\Platform\check_platform_configuration.py
+@@ -21,6 +21,7 @@
+ assert "IONameMatch" not in personality
+ assert personality["IOPropertyMatch"] == [
+     {"IOName": "CLSA0100"},
++    {"IOName": "CLSA0102"},
+     {"IOName": "CSC3551"},
+     {"IOName": "CSC3556"},
+ ]

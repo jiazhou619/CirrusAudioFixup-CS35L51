@@ -1,0 +1,212 @@
+name: CI & CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned kernel SDK
+        uses: actions/checkout@v4
+        with:
+          repository: acidanthera/MacKernelSDK
+          ref: 7af1933c27aefcbdf4809ee44478829aad30f9c1
+          path: MacKernelSDK
+
+      - name: Checkout pinned Lilu headers
+        uses: actions/checkout@v4
+        with:
+          repository: acidanthera/Lilu
+          ref: e4748cc081bf060302c7d3c44a643ce1d11b7e1d
+          path: Lilu
+
+      - name: Show build environment
+        run: |
+          echo "macOS version: $(sw_vers -productVersion)"
+          xcodebuild -version
+          python3 --version
+
+      - name: Run host regression test suite
+        run: python3 Tests/run.py
+
+      - name: Record build source identity
+        run: python3 Tools/Build/build_provenance.py snapshot --root "$GITHUB_WORKSPACE" --snapshot "$RUNNER_TEMP/cirrus-source.json"
+
+      - name: Build Release kext
+        run: |
+          xcodebuild \
+            -project CirrusAudioFixup.xcodeproj \
+            -target CirrusAudioFixup \
+            -configuration Release \
+            -sdk macosx \
+            -jobs "$(sysctl -n hw.ncpu)" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="${GITHUB_WORKSPACE}/build/Release" \
+            build
+
+      - name: Build Debug kext
+        run: |
+          xcodebuild \
+            -project CirrusAudioFixup.xcodeproj \
+            -target CirrusAudioFixup \
+            -configuration Debug \
+            -sdk macosx \
+            -jobs "$(sysctl -n hw.ncpu)" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR="${GITHUB_WORKSPACE}/build/Debug" \
+            build
+
+      - name: Verify build artifacts
+        run: |
+          python3 Tools/Build/release_metadata.py
+          for MODE in Release Debug; do
+            BUNDLE="${GITHUB_WORKSPACE}/build/${MODE}/CirrusAudioFixup.kext"
+            plutil -lint "${BUNDLE}/Contents/Info.plist"
+            python3 Tools/Build/release_metadata.py --bundle "$BUNDLE"
+            python3 Tools/Build/verify_kext_vtables.py "$BUNDLE/Contents/MacOS/CirrusAudioFixup"
+            lipo "${BUNDLE}/Contents/MacOS/CirrusAudioFixup" -verify_arch x86_64
+            SYMBOLS="${BUNDLE}.dSYM/Contents/Resources/DWARF/CirrusAudioFixup"
+            test -f "$SYMBOLS"
+            BINARY_UUID="$(dwarfdump --uuid "${BUNDLE}/Contents/MacOS/CirrusAudioFixup" | awk '{print $2}')"
+            SYMBOL_UUID="$(dwarfdump --uuid "$SYMBOLS" | awk '{print $2}')"
+            test -n "$BINARY_UUID"
+            test "$BINARY_UUID" = "$SYMBOL_UUID"
+            python3 Tools/Build/build_provenance.py finalize --root "$GITHUB_WORKSPACE" \
+              --snapshot "$RUNNER_TEMP/cirrus-source.json" --bundle "$BUNDLE" \
+              --configuration "$MODE" --binary-uuid "$BINARY_UUID" --symbols-uuid "$SYMBOL_UUID"
+            plutil -lint "$BUNDLE/Contents/Resources/CirrusBuildManifest.plist"
+          done
+          echo "--- Release kext ---"
+          file "${GITHUB_WORKSPACE}/build/Release/CirrusAudioFixup.kext/Contents/MacOS/CirrusAudioFixup"
+          echo "--- Debug kext ---"
+          file "${GITHUB_WORKSPACE}/build/Debug/CirrusAudioFixup.kext/Contents/MacOS/CirrusAudioFixup"
+
+      - name: Package kext bundles
+        if: github.event_name != 'pull_request'
+        run: |
+          cd "${GITHUB_WORKSPACE}/build/Release"
+          zip -qry "${GITHUB_WORKSPACE}/CirrusAudioFixup-RELEASE.zip" CirrusAudioFixup.kext
+
+          cd "${GITHUB_WORKSPACE}/build/Debug"
+          zip -qry "${GITHUB_WORKSPACE}/CirrusAudioFixup-DEBUG.zip" CirrusAudioFixup.kext CirrusAudioFixup.kext.dSYM
+
+          cd "${GITHUB_WORKSPACE}"
+          ls -lh CirrusAudioFixup-RELEASE.zip CirrusAudioFixup-DEBUG.zip
+
+      - name: Upload Release artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CirrusAudioFixup-RELEASE-${{ github.sha }}
+          path: CirrusAudioFixup-RELEASE.zip
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload Debug artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CirrusAudioFixup-DEBUG-${{ github.sha }}
+          path: CirrusAudioFixup-DEBUG.zip
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: [build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release identity
+        id: changelog
+        run: python3 Tools/Build/release_metadata.py --output-dir dist
+
+      - name: Check release status
+        id: release_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.changelog.outputs.tag }}
+        run: |
+          STATUS=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo "not_found")
+          if [ "$STATUS" = "false" ]; then
+            echo "Version ${TAG} is already published. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "is_draft=$STATUS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Release artifact
+        if: steps.release_check.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: CirrusAudioFixup-RELEASE-${{ github.sha }}
+          path: dist
+
+      - name: Download Debug artifact
+        if: steps.release_check.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: CirrusAudioFixup-DEBUG-${{ github.sha }}
+          path: dist
+
+      - name: Prepare versioned release assets
+        if: steps.release_check.outputs.skip != 'true'
+        run: |
+          VERSION="${{ steps.changelog.outputs.version }}"
+          cp dist/CirrusAudioFixup-RELEASE.zip "CirrusAudioFixup-${VERSION}-RELEASE.zip"
+          cp dist/CirrusAudioFixup-DEBUG.zip "CirrusAudioFixup-${VERSION}-DEBUG.zip"
+          echo "" >> dist/RELEASE_NOTES.md
+          echo "### Checksums (SHA-256)" >> dist/RELEASE_NOTES.md
+          echo '```' >> dist/RELEASE_NOTES.md
+          shasum -a 256 "CirrusAudioFixup-${VERSION}-RELEASE.zip" "CirrusAudioFixup-${VERSION}-DEBUG.zip" >> dist/RELEASE_NOTES.md
+          echo '```' >> dist/RELEASE_NOTES.md
+          ls -la "CirrusAudioFixup-${VERSION}-RELEASE.zip" "CirrusAudioFixup-${VERSION}-DEBUG.zip"
+          cat dist/RELEASE_NOTES.md
+
+      - name: Publish a new version (never overwrite an existing release)
+        if: steps.release_check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.changelog.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.changelog.outputs.version }}
+          IS_DRAFT: ${{ steps.release_check.outputs.is_draft }}
+        run: |
+          if [ "$IS_DRAFT" = "true" ]; then
+            gh release upload "$RELEASE_TAG" --clobber \
+              "CirrusAudioFixup-${RELEASE_VERSION}-RELEASE.zip" \
+              "CirrusAudioFixup-${RELEASE_VERSION}-DEBUG.zip"
+            gh release edit "$RELEASE_TAG" --draft=false --latest --title "CirrusAudioFixup $RELEASE_TAG" --notes-file dist/RELEASE_NOTES.md
+          else
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
+              --title "CirrusAudioFixup $RELEASE_TAG" --notes-file dist/RELEASE_NOTES.md \
+              "CirrusAudioFixup-${RELEASE_VERSION}-RELEASE.zip" \
+              "CirrusAudioFixup-${RELEASE_VERSION}-DEBUG.zip"
+          fi

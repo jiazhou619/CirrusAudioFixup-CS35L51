@@ -1,0 +1,113 @@
+name: Bug report
+description: A reproducible boot, I2C/SPI, audio, power, build or collector problem
+title: "[Bug]: "
+labels: ["type: bug", "status: needs-logs"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report one reproducible problem per issue. For a new board or unsupported laptop model, use **Hardware support** instead.
+        Before reporting a bug:
+        1. Check the [Troubleshooting section](https://github.com/hoaug-tran/CirrusAudioFixup#troubleshooting) and [Diagnostics guide](https://github.com/hoaug-tran/CirrusAudioFixup/blob/develop/docs/diagnostics/diagnostics.md).
+        2. If internal speakers are silent but headphones work, or if bass is missing in a multi-speaker laptop, check the [Codec Route guide](https://github.com/hoaug-tran/CirrusAudioFixup/blob/develop/docs/hardware/codec_route.md) — AppleALC pin routing issues belong to the codec layout, not amplifier driver faults.
+        3. First-boot checks use `-cirrusro -cirrusdbg`; do not enable DSP bypass, force an unrelated board SSID, or raise digital gain.
+        4. Run `sudo bash Tools/Collectors/collect_macos.sh` while audio is actively playing (or attempting to play), and attach the resulting Desktop ZIP.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing open and closed issues and pull requests to confirm this problem is not already resolved or documented.
+          required: true
+        - label: I checked the README Troubleshooting section, Diagnostics guide, and confirmed Audio MIDI Setup format is set to 48,000 Hz.
+          required: true
+        - label: If experiencing silent speakers or missing bass, I verified the AppleALC pin routing against the Codec Route guide (docs/hardware/codec_route.md).
+          required: true
+        - label: I collected fresh diagnostics using sudo bash Tools/Collectors/collect_macos.sh while audio is playing (or attempted) and attached the ZIP.
+          required: true
+        - label: I describe what I actually tested on real hardware, and did not include personal data or an entire EFI folder.
+          required: true
+  - type: dropdown
+    id: problem_type
+    attributes:
+      label: Problem type
+      options:
+        - Boot failure or kernel panic
+        - Driver does not attach or an amplifier is missing
+        - No sound or only one speaker works
+        - Headphone, output or microphone transition
+        - Sleep or wake
+        - Sound quality or loudness
+        - Build, packaging or release artifact
+        - Collector or diagnostics
+        - Documentation error
+        - Other reproducible problem
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Machine and operating system
+      description: Exact model, CPU and macOS version/build. For a build or collector problem, give the actual host OS instead.
+      placeholder: "Manufacturer/model; CPU; OS version and build"
+    validations:
+      required: true
+  - type: textarea
+    id: build
+    attributes:
+      label: CirrusAudioFixup build
+      description: Version, Debug or Release, download/build source, and commit or CI artifact link. State any local changes and confirm which bundle was loaded. Do not write only latest.
+      placeholder: "Version/configuration; tag or commit; release/CI link or local build; local changes"
+    validations:
+      required: true
+  - type: dropdown
+    id: bus
+    attributes:
+      label: Amplifier control bus
+      description: Use Cirrus_Bus, Linux driver binding or ACPI evidence. CSC3551 and CPU vendor alone do not identify the bus.
+      options:
+        - I2C
+        - SPI
+        - Not detected yet
+        - Not applicable to this build, tool or documentation problem
+    validations:
+      required: true
+  - type: textarea
+    id: audio_hardware
+    attributes:
+      label: Audio hardware
+      description: For driver/audio failures, give known codec ID, HDA subsystem ID, amplifier model/revision and ACPI HID/_SUB. Include I2C addresses or SPI controller/chip selects if known. Attach the report rather than inventing missing IDs.
+      placeholder: "Codec and HDA SSID; amplifier and revision; ACPI identity; endpoints; unknown fields"
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Loaded configuration
+      description: Give relevant boot arguments, OpenCore version, and Lilu/AppleALC/CirrusAudioFixup versions/load order. For I2C include the custom VoodooI2C source/build; SPI does not require it. State any HDA restoration patch and whether AppleALC exposes the intended speaker route. For non-runtime issues, write not applicable and explain.
+      placeholder: "Boot arguments; relevant kexts and order; provider if I2C; speaker route working/missing/unknown; other audio patches"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected result and actual result
+      description: Describe the trigger, frequency and what changed. Give the last working build if this is a regression. For sound comparisons, identify the output, volume/effects settings and comparison method; a slider percentage alone is not a matched level.
+      placeholder: |
+        Steps:
+        Expected:
+        Actual and frequency:
+        Last working build, if any:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence from the affected build
+      description: Attach the macOS collector ZIP, or a build/collector error log for host-side failures. For a panic or failed boot, attach the panic report/photo and the tested build identity. If collection is impossible, paste the exact command/error and explain why. Do not substitute logs from another build or only say no logs.
+      placeholder: "Drop the files here. Point to the failure time, first failure and relevant channel/endpoint. If unavailable, explain the blocker and include the command error."
+    validations:
+      required: true
+  - type: textarea
+    id: comparisons
+    attributes:
+      label: Other results, if available
+      description: Existing Linux/Windows reports or tests without this kext can help isolate the problem. State not tested where appropriate; extra bypass or fault-injection tests are not required.
