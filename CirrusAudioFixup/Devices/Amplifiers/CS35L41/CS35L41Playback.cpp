@@ -278,7 +278,7 @@ void CS35L41Driver::monitorCS35L41(AmplifierState& amp, const cirrus::core::Play
     if (eventRoute && !routePermitsPlayback) {
         if (amp.playbackActive && amp.cleanupAttempts < 3)
             stopRuntimePlayback(amp);
-        if (amp.pllRecoveryPending && amp.diagnostic.latestFailure == DIAG_PLL_UNLOCKED && !amp.playbackActive) {
+        if (amp.pllRecoveryPending && (amp.diagnostic.latestFailure == DIAG_PLL_UNLOCKED || amp.diagnostic.latestFailure == DIAG_I2C_TRANSFER) && !amp.playbackActive) {
             amp.playbackFaulted = false;
             amp.pllRecoveryPending = false;
             amp.pllRecoveryAttempts = 0;
@@ -288,8 +288,10 @@ void CS35L41Driver::monitorCS35L41(AmplifierState& amp, const cirrus::core::Play
     if (amp.playbackFaulted) {
         if (amp.playbackActive && amp.cleanupAttempts < 3)
             stopRuntimePlayback(amp);
-        if (!amp.playbackActive && hasAudio && amp.initialized && amp.pllRecoveryPending && amp.pllRecoveryAttempts < 3 &&
-            amp.diagnostic.latestFailure == DIAG_PLL_UNLOCKED && checkProtectionStatus(amp)) {
+        const bool recoverableFailure =
+            amp.diagnostic.latestFailure == DIAG_PLL_UNLOCKED || amp.diagnostic.latestFailure == DIAG_I2C_TRANSFER;
+        if (!amp.playbackActive && hasAudio && amp.initialized && (amp.pllRecoveryPending || recoverableFailure) &&
+            amp.pllRecoveryAttempts < 3 && recoverableFailure && checkProtectionStatus(amp)) {
             // The selected speaker route authorizes preparation. Idle PLL
             // status is not a readiness gate: this hardware can report
             // unlocked until GLOBAL_EN starts the power-up sequence.
@@ -458,7 +460,7 @@ void CS35L41Driver::monitorCS35L41(AmplifierState& amp, const cirrus::core::Play
                              readRegister(amp, registers::kRegIrq1RawStatus3, &retryPllStatus, TRACE_PLAYBACK) && !(retryPllStatus & 2) &&
                              checkProtectionStatus(amp);
             amp.playbackFaulted = true;
-            amp.pllRecoveryPending = failure == DIAG_PLL_UNLOCKED;
+            amp.pllRecoveryPending = failure == DIAG_PLL_UNLOCKED || failure == DIAG_I2C_TRANSFER;
             amp.pllRetryCooldown = 4;
             amp.clockWaitAfterCleanup = clockWait;
             stopRuntimePlayback(amp);

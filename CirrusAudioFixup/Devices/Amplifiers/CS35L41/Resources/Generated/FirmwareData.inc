@@ -27546,7 +27546,15 @@ const uint8_t cs35l41_dsp1_spk_prot_17aa383d_generic_r0_bin[] = {
     0x7d, 0x00, 0x00, 0x00
 };
 
+// Gain=20 companion tuning for 17AA:383B (within driver-safe limit of 20).
+// Format follows Tuning.hpp / Linux v6.12 cs35l41_hda.c: 16-byte header + one
+// type=0 gain record. Raises the otherwise default pcmGain=17 to the maximum.
+const uint8_t cs35l41_17aa383b_gain20_tuning[] = {
+   0x35, 0x4a, 0x9a, 0x10, 0x01, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00
+};
+
 const FirmwareResource cs35l41Firmware[] = {
+    { 0x17AA, 0x383B, 0, "halo_cspl_RAM_revB2_29.49.0.wmfw", "17AA383D_20210811_A0.bin", cs35l41_dsp1_spk_prot_17aa383d_wmfw, sizeof(cs35l41_dsp1_spk_prot_17aa383d_wmfw), cs35l41_dsp1_spk_prot_17aa383d_generic_l0_bin, sizeof(cs35l41_dsp1_spk_prot_17aa383d_generic_l0_bin), cs35l41_dsp1_spk_prot_17aa383d_generic_r0_bin, sizeof(cs35l41_dsp1_spk_prot_17aa383d_generic_r0_bin), false, cs35l41_17aa383b_gain20_tuning, sizeof(cs35l41_17aa383b_gain20_tuning), cs35l41_17aa383b_gain20_tuning, sizeof(cs35l41_17aa383b_gain20_tuning), nullptr, nullptr, true },
     { 0x17AA, 0x383D, 0, "halo_cspl_RAM_revB2_29.49.0.wmfw", "17AA383D_20210811_A0.bin", cs35l41_dsp1_spk_prot_17aa383d_wmfw, sizeof(cs35l41_dsp1_spk_prot_17aa383d_wmfw), cs35l41_dsp1_spk_prot_17aa383d_generic_l0_bin, sizeof(cs35l41_dsp1_spk_prot_17aa383d_generic_l0_bin), cs35l41_dsp1_spk_prot_17aa383d_generic_r0_bin, sizeof(cs35l41_dsp1_spk_prot_17aa383d_generic_r0_bin), false, nullptr, 0, nullptr, 0, nullptr, nullptr, true },
     { 0x1028, 0x0B28, 1, "cs35l41-dsp1-spk-prot-10280b28.wmfw", "cs35l41-dsp1-spk-prot-10280b28-spkid1-l0.bin", cs35l41_dsp1_spk_prot_10280b28_wmfw, sizeof(cs35l41_dsp1_spk_prot_10280b28_wmfw), cs35l41_dsp1_spk_prot_10280b28_spkid1_l0_bin, sizeof(cs35l41_dsp1_spk_prot_10280b28_spkid1_l0_bin), cs35l41_dsp1_spk_prot_10280b28_spkid1_r0_bin, sizeof(cs35l41_dsp1_spk_prot_10280b28_spkid1_r0_bin), false, nullptr, 0, nullptr, 0, nullptr, nullptr, false },
     { 0x1028, 0x0B28, 0, "cs35l41-dsp1-spk-prot-10280b28.wmfw", "cs35l41-dsp1-spk-prot-10280b28-spkid0-l0.bin", cs35l41_dsp1_spk_prot_10280b28_wmfw, sizeof(cs35l41_dsp1_spk_prot_10280b28_wmfw), cs35l41_dsp1_spk_prot_10280b28_spkid0_l0_bin, sizeof(cs35l41_dsp1_spk_prot_10280b28_spkid0_l0_bin), cs35l41_dsp1_spk_prot_10280b28_spkid0_r0_bin, sizeof(cs35l41_dsp1_spk_prot_10280b28_spkid0_r0_bin), false, nullptr, 0, nullptr, 0, nullptr, nullptr, false },

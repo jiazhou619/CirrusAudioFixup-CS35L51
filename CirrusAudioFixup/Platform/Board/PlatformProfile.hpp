@@ -121,7 +121,7 @@ inline bool permitsHardwareInitialization(const PlatformProfile& profile, uint32
     }
     return profile.allowAutomaticInitialization && profile.acpiHid &&
            ((!strcmp(profile.acpiHid, "CLSA0100") && (pciSubsystemId == 0x17AA382B || pciSubsystemId == 0x17AA3847)) ||
-            (!strcmp(profile.acpiHid, "CLSA0102") && pciSubsystemId == 0x17AA383D));
+            (!strcmp(profile.acpiHid, "CLSA0102") && (pciSubsystemId == 0x17AA383D || pciSubsystemId == 0x17AA383B)));
 }
 
 inline const PlatformProfile& defaultPlatformProfile() { return kSafeUnknownPlatform; }
