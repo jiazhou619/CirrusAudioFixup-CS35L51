@@ -271,7 +271,7 @@ int main(){
         f.runtime.unbind();const auto ended=f.port.calls;f.runtime.unbind();assert(f.port.calls==ended);
     }
     Fixture identity;identity.port.failAt=1;identity.bind();assert(identity.runtime.bringUp()==-99);assert(identity.host.diag.ioReturn==-99);
-    Fixture unknown;unknown.port.values[0]=0x35a41;unknown.bind();assert(unknown.runtime.bringUp()==kIOReturnNotFound && unknown.port.writes==0);
+    Fixture unknown;unknown.port.values[0]=0x35a56;unknown.bind();assert(unknown.runtime.bringUp()==kIOReturnNotFound && unknown.port.writes==0);
     Fixture deny;deny.host.allow=false;deny.bind();assert(deny.runtime.bringUp()==kIOReturnNotPermitted && deny.port.writes==0);
     for(const char* phase:{"probe","otp","errata","clock","asp","gpio","platform","firmware","dsp"}){
         Fixture f;f.host.phase=phase;f.bind();assert(f.runtime.bringUp()==kIOReturnNotReady);assert(f.runtime.stage()==core::AmplifierStage::DebugHalted);assert(!f.runtime.report(0).initialized);
