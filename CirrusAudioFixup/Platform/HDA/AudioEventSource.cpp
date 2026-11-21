@@ -82,46 +82,35 @@ OSDefineMetaClassAndStructors(CirrusAudioBootstrap, IOService)
         return number != nullptr;
     }
 
-    // Retain listeners while holding the list lock, then drop it before registry
-    // inspection or notification. Teardown removes a listener before releasing its
-    // event source; an in-flight observer therefore always owns a live reference.
-    void publish(IOService * sender, bool route, uint32_t value) {
-        AudioEventSource* targets[4]{};
-        if (!listenersLock)
+    // Hooks run inside IOAudioFamily call paths that AppleHDA touches during
+    // boot. Only the raw event is handed to each listener here; registry
+    // lookups and notifications are deferred to the workloop.
+    void postAll(IOService * sender, bool route, uint32_t value) {
+        if (!listenersLock || !sender)
             return;
         IOLockLock(listenersLock);
-        for (size_t i = 0; i < 4; ++i) {
-            targets[i] = listeners[i];
-            if (targets[i])
-                targets[i]->retain();
+        for (auto* target : listeners) {
+            if (target)
+                target->postRaw(sender, route, value);
         }
         IOLockUnlock(listenersLock);
-        for (auto* target : targets) {
-            if (target) {
-                target->observe(sender, route, value);
-                target->release();
-            }
-        }
     }
 
     IOReturn updateValue(IOService * control, OSObject * value) {
         auto result = reinterpret_cast<IOReturn (*)(IOService*, OSObject*)>(originalUpdateValue)(control, value);
         if (result != kIOReturnSuccess)
             return result;
-        uint32_t type = 0, subtype = 0, usage = 0;
         auto* number = OSDynamicCast(OSNumber, value);
-        // FourCC values are IOAudioTypes.h ABI constants. Only an output selector
-        // can change the speaker route; volume and microphone controls are ignored.
-        if (number && readNumber(control, "IOAudioControlType", type) && type == kSelectorType &&
-            readNumber(control, "IOAudioControlSubType", subtype) && subtype == kOutputControl &&
-            readNumber(control, "IOAudioControlUsage", usage) && usage == kOutputControl)
-            publish(control, true, number->unsigned32BitValue());
+        // Control classification is deferred to the workloop: reading registry
+        // properties here would allocate inside AppleHDA's control path.
+        if (number)
+            postAll(control, true, number->unsigned32BitValue());
         return result;
     }
 
     uint32_t setState(IOService * engine, uint32_t state) {
         auto previous = reinterpret_cast<uint32_t (*)(IOService*, uint32_t)>(originalSetState)(engine, state);
-        publish(engine, false, state);
+        postAll(engine, false, state);
         return previous;
     }
 
@@ -199,7 +188,8 @@ CirrusAudioEventSource* CirrusAudioEventSource::create(OSObject* target, IOServi
     auto* source = new CirrusAudioEventSource;
     if (!source)
         return nullptr;
-    if (!source->init(target) || !(source->mMailboxLock = IOLockAlloc())) {
+    if (!source->init(target) || !(source->mMailboxLock = IOLockAlloc()) ||
+        !(source->mQueueLock = IOSimpleLockAlloc())) {
         source->release();
         return nullptr;
     }
@@ -292,6 +282,65 @@ void CirrusAudioEventSource::detach() {
     mAttached = false;
     mPending = false;
     IOLockUnlock(mMailboxLock);
+    // Drop queued events: observe() returns early while detached and releases
+    // the retained senders.
+    drainRaw();
+}
+
+// Runs on the IOAudioFamily hook thread. Retaining the sender keeps it alive
+// until the workloop consumes the event; no registry call is made here.
+void CirrusAudioEventSource::postRaw(IOService* sender, bool route, uint32_t value) {
+    if (!sender || !mQueueLock)
+        return;
+    sender->retain();
+    bool queued = false;
+    IOInterruptState state = IOSimpleLockLockDisableInterrupt(mQueueLock);
+    if (mQueueCount < kRawCapacity) {
+        size_t index = (mQueueHead + mQueueCount) % kRawCapacity;
+        mQueue[index].sender = sender;
+        mQueue[index].value = value;
+        mQueue[index].route = route;
+        ++mQueueCount;
+        queued = true;
+    }
+    IOSimpleLockUnlockEnableInterrupt(mQueueLock, state);
+    if (!queued) {
+        sender->release();
+        return;
+    }
+    signalWorkAvailable();
+}
+
+// Runs on the workloop. Control classification happens here so the hook thread
+// never touches registry properties.
+void CirrusAudioEventSource::drainRaw() {
+    for (;;) {
+        RawEvent event{};
+        if (!mQueueLock)
+            return;
+        IOInterruptState state = IOSimpleLockLockDisableInterrupt(mQueueLock);
+        if (mQueueCount) {
+            event = mQueue[mQueueHead];
+            mQueue[mQueueHead] = RawEvent{};
+            mQueueHead = (mQueueHead + 1) % kRawCapacity;
+            --mQueueCount;
+        }
+        IOSimpleLockUnlockEnableInterrupt(mQueueLock, state);
+        if (!event.sender)
+            return;
+        bool route = event.route;
+        if (route) {
+            uint32_t type = 0, subtype = 0, usage = 0;
+            // FourCC values are IOAudioTypes.h ABI constants. Only an output
+            // selector can change the speaker route.
+            route = readNumber(event.sender, "IOAudioControlType", type) && type == kSelectorType &&
+                    readNumber(event.sender, "IOAudioControlSubType", subtype) && subtype == kOutputControl &&
+                    readNumber(event.sender, "IOAudioControlUsage", usage) && usage == kOutputControl;
+        }
+        if (route || !event.route)
+            observe(event.sender, route, event.value);
+        event.sender->release();
+    }
 }
 
 void CirrusAudioEventSource::observe(IOService* sender, bool route, uint32_t value, bool seed) {
@@ -368,6 +417,7 @@ AudioEventState CirrusAudioEventSource::snapshot() {
 bool CirrusAudioEventSource::unchanged(uint32_t generation) { return snapshot().generation == generation; }
 
 bool CirrusAudioEventSource::checkForWork() {
+    drainRaw();
     IOLockLock(mMailboxLock);
     bool pending = mPending && mAttached;
     auto state = mState;
@@ -383,6 +433,11 @@ void CirrusAudioEventSource::free() {
         detach();
     OSSafeReleaseNULL(mEngine);
     OSSafeReleaseNULL(mController);
+    if (mQueueLock) {
+        drainRaw();
+        IOSimpleLockFree(mQueueLock);
+        mQueueLock = nullptr;
+    }
     if (mMailboxLock)
         IOLockFree(mMailboxLock);
     IOEventSource::free();

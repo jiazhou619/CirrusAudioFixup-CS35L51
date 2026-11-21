@@ -37,12 +37,28 @@ public:
     bool checkForWork() override;
     void free() override;
     void observe(IOService* sender, bool route, uint32_t value, bool seed = false);
+    // Called from the IOAudioFamily hooks. Only records the raw event and wakes
+    // the workloop; registry lookups and notifications run outside the audio
+    // call stack.
+    void postRaw(IOService* sender, bool route, uint32_t value);
     AudioEventState snapshot();
     bool unchanged(uint32_t generation);
 
 private:
+    struct RawEvent {
+        IOService* sender{nullptr};
+        uint32_t value{0};
+        bool route{false};
+    };
+    static constexpr size_t kRawCapacity = 32;
+    void drainRaw();
+
     IOService* mController{nullptr};
     IOLock* mMailboxLock{nullptr};
+    IOSimpleLock* mQueueLock{nullptr};
+    RawEvent mQueue[kRawCapacity]{};
+    size_t mQueueHead{0};
+    size_t mQueueCount{0};
     Handler mHandler{nullptr};
     AudioEventState mState{};
     bool mPending{false};
