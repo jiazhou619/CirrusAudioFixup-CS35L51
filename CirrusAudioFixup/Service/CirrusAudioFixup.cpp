@@ -236,7 +236,9 @@ bool CirrusAudioFixup::finishStartup() {
             CIRRUS_LOG("Platform hardware reset not asserted or verified; continuing with ACPI and I2C soft reset");
         }
 
-        IOSleep(15);
+        // CS35L41 needs longer than 15 ms after RESET before its I2C identity
+        // register answers; probing too early reports a permanent timeout.
+        IOSleep(200);
         CIRRUS_LOG("BOOT_FLOW AMP_DISCOVERY_BEGIN");
 #if defined(KERNEL)
         publishBootCheckpoint(this, "AMP_DISCOVERY_BEGIN");

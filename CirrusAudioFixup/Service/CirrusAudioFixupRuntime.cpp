@@ -504,7 +504,9 @@ bool CirrusAudioFixup::retryPlatformIdentity() {
         publishDriverVerdict();
         return true;
     }
-    IOSleep(15);
+    // CS35L41 needs longer than 15 ms after RESET before its I2C identity
+    // register answers; probing too early reports a permanent timeout.
+    IOSleep(200);
     if (mNativeSPI.bound())
         detectNativeSPIAmplifiers();
     else
