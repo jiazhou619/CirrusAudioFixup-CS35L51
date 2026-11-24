@@ -922,8 +922,31 @@ size_t CirrusAudioFixup::detectConfiguredI2CAmplifiers() {
         cirrus::core::RegisterMap map(bus, *driver->format(cirrus::core::BusTransportType::I2C), false);
         uint32_t id = 0;
         bool readable = map.read(driver->identityRegister, &id);
-        recordTrace(TRACE_PROBE, uint8_t(i), false, false, driver->identityRegister, readable ? id : 0, map.lastError());
         char key[64]{};
+        // Warm reboot can leave the DesignWare core mid-transaction, so the
+        // first identity read times out (0xE00002D6) even though the amp is
+        // present. Ask the bus driver for its 9-clock + STOP recovery and
+        // re-read. Boot probe only; no GPIO reset here (it disturbs the
+        // touchscreen on I2CC).
+        int recoverAttempts = 0;
+        IOReturn recoverRet = kIOReturnSuccess;
+        for (int attempt = 0; !readable && map.lastError() != kIOReturnUnsupported && attempt < 2; ++attempt) {
+            ++recoverAttempts;
+            recoverRet = cirrus::transport::VoodooI2CProvider::recoverBus(mProvider);
+            CIRRUS_ERR("I2C identity read failed: endpoint=%lu ret=0x%08X bus-recover attempt=%d ret=0x%08X",
+                       static_cast<unsigned long>(i), map.lastError(), attempt + 1, recoverRet);
+            if (recoverRet != kIOReturnSuccess)
+                break;
+            IOSleep(50);
+            readable = map.read(driver->identityRegister, &id);
+        }
+        if (recoverAttempts) {
+            snprintf(key, sizeof(key), "Cirrus_I2C_%lu_BusRecover", static_cast<unsigned long>(i));
+            setProperty(key, uint64_t(uint32_t(recoverRet)), 32);
+            snprintf(key, sizeof(key), "Cirrus_I2C_%lu_BusRecover_Tries", static_cast<unsigned long>(i));
+            setProperty(key, uint64_t(uint32_t(recoverAttempts)), 32);
+        }
+        recordTrace(TRACE_PROBE, uint8_t(i), false, false, driver->identityRegister, readable ? id : 0, map.lastError());
         snprintf(key, sizeof(key), "Cirrus_I2C_%lu_Probe_Return", static_cast<unsigned long>(i));
         setProperty(key, uint64_t(uint32_t(map.lastError())), 32);
         snprintf(key, sizeof(key), "Cirrus_I2C_%lu_DeviceID", static_cast<unsigned long>(i));

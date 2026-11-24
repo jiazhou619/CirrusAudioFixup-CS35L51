@@ -9,6 +9,10 @@
 #define VOODOO_I2C_TRANSFER_TO_ADDRESS "VoodooI2CTransferToAddress"
 #endif
 
+#ifndef VOODOO_I2C_RECOVER_BUS
+#define VOODOO_I2C_RECOVER_BUS "VoodooI2CRecoverBus"
+#endif
+
 struct VoodooI2CAddressedTransfer {
     // Layout must match the provider's callPlatformFunction implementation.
     // Buffers are borrowed for the synchronous call and must remain valid.
@@ -33,6 +37,17 @@ namespace cirrus::transport {
 class VoodooI2CProvider final {
 public:
     VoodooI2CProvider(IOService* provider, uint8_t targetAddress) : mProvider(provider), mTargetAddress(targetAddress) {}
+
+    // Boot-time only: asks the provider to run its DesignWare 9-clock + STOP
+    // bus-clear sequence (warm reboot can leave a slave holding SDA low).
+    // waitForFunction=false so a stock provider without the KPI returns
+    // kIOReturnUnsupported immediately instead of blocking.
+    static IOReturn recoverBus(IOService* provider) {
+        if (!provider)
+            return kIOReturnNotReady;
+        return provider->callPlatformFunction(VOODOO_I2C_RECOVER_BUS, false, nullptr, nullptr, nullptr, nullptr);
+    }
+
     IOReturn lastReturn() const { return mLastReturn; }
     bool transfer(uint8_t* writeBuf, uint16_t writeLen, uint8_t* readBuf, uint16_t readLen) {
         if (mTargetAddress > 0x7F || (writeLen && !writeBuf) || (readLen && !readBuf) || (!writeLen && !readLen)) {
